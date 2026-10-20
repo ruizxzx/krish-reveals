@@ -1,0 +1,28 @@
+{
+  "name": "krish-sarkar-portfolio",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 0.0.0.0",
+    "server": "node server/index.mjs",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty",
+    "start": "node server/index.mjs",
+    "admin:create": "node scripts/create-admin.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "framer-motion": "^12.23.12",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "vite": "^6.4.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "typescript": "~5.9.2"
+  }
+}
