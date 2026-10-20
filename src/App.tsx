@@ -230,39 +230,65 @@ function Footer({ settings }: { settings: Settings }) {
 function Portfolio({ settings, projects, posts, theme, onThemeToggle }: { settings: Settings; projects: Project[]; posts: Post[]; theme: Theme; onThemeToggle: (origin: HTMLElement) => void }) {
   const [filter, setFilter] = useState('All work')
   const [expandedProjects, setExpandedProjects] = useState(false)
+  const siteRef = useRef<HTMLElement>(null)
   const filters = ['All work', ...Array.from(new Set(projects.map((project) => project.category)))]
   const shownProjects = projects.filter((project) => filter === 'All work' || project.category === filter)
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const elements = document.querySelectorAll<HTMLElement>('.reference-site > section:not(.reference-hero), .reference-tools, .reference-site .work-card, .reference-site .experience-row, .reference-site .skill-card, .reference-site .post-card')
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return
-        entry.target.classList.add('is-visible')
-        observer.unobserve(entry.target)
+    const site = siteRef.current
+    if (!site) return
+    let cancelled = false
+    let cleanup = () => {}
+    void Promise.all([import('gsap'), import('gsap/ScrollTrigger')]).then(([gsapModule, scrollTriggerModule]) => {
+      if (cancelled || !siteRef.current) return
+      const gsap = gsapModule.gsap
+      const ScrollTrigger = scrollTriggerModule.ScrollTrigger
+      gsap.registerPlugin(ScrollTrigger)
+      const context = gsap.context(() => {
+      const hero = gsap.timeline({ defaults: { ease: 'power3.out' } })
+      hero.fromTo('.reference-hero .hero-left > .eyebrow', { autoAlpha: 0, y: 16 }, { autoAlpha: 1, y: 0, duration: 0.65 })
+        .fromTo('.reference-hero .reveal-hero-title', { autoAlpha: 0, y: 40 }, { autoAlpha: 1, y: 0, duration: 0.9 }, '-=0.3')
+        .fromTo('.reference-hero .hero-build-statement, .reference-hero .hero-description, .reference-hero .hero-actions', { autoAlpha: 0, y: 20 }, { autoAlpha: 1, y: 0, duration: 0.7, stagger: 0.12 }, '-=0.45')
+        .fromTo('.reference-hero-art', { autoAlpha: 0, y: 24, scale: 0.97 }, { autoAlpha: 1, y: 0, scale: 1, duration: 1.1 }, '-=0.65')
+
+      const targets = gsap.utils.toArray<HTMLElement>('.reference-tools, .reference-site > section:not(.reference-hero), .reference-site .work-card, .reference-site .experience-row, .reference-site .skill-card, .reference-site .post-card', site)
+      targets.forEach((target) => {
+        gsap.fromTo(target, { autoAlpha: 0, y: 30 }, {
+          autoAlpha: 1,
+          y: 0,
+          duration: 0.8,
+          ease: 'power3.out',
+          scrollTrigger: { trigger: target, start: 'top 88%', once: true },
+        })
       })
-    }, { threshold: 0.12 })
-    elements.forEach((element, index) => {
-      element.classList.add('scroll-reveal')
-      element.style.setProperty('--reveal-delay', `${Math.min(index % 4, 3) * 70}ms`)
-      observer.observe(element)
+
+      gsap.to('.reference-hero-art', {
+        yPercent: -5,
+        ease: 'none',
+        scrollTrigger: { trigger: '.reference-hero', start: 'top top', end: 'bottom top', scrub: 0.6 },
+      })
+      }, site)
+      cleanup = () => context.revert()
     })
-    return () => observer.disconnect()
+    return () => {
+      cancelled = true
+      cleanup()
+    }
   }, [])
   const priority = ['tablely', 'gym-os', 'instaly', 'shahzad-securities', 'personal-portfolio', 'attendance-system', 'offscrpt', 'orbit']
   const sortedProjects = [...shownProjects].sort((a, b) => { const ai = priority.indexOf(a.slug); const bi = priority.indexOf(b.slug); return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) })
   const featured = sortedProjects.slice(0, 3)
   const more = sortedProjects.slice(3, expandedProjects ? undefined : 7)
   const hiddenProjectCount = Math.max(0, sortedProjects.length - 7)
-  return <div className={`portfolio-shell${theme === 'dark' ? ' theme-dark' : ''}`}><Header settings={settings} theme={theme} onThemeToggle={onThemeToggle}/><main className="reference-site">
-    <Hero settings={settings}/><MarqueeSection projects={projects}/><TrustedTools/><AboutSection settings={settings}/><ServicesSection settings={settings}/>
+  return <div className={`portfolio-shell${theme === 'dark' ? ' theme-dark' : ''}`}><Header settings={settings} theme={theme} onThemeToggle={onThemeToggle}/><main className="reference-site" ref={siteRef}>
+    <Hero settings={settings}/><TrustedTools/>
     <section className="work-section section-wrap reference-work" id="work"><div className="reference-work-heading"><div><Eyebrow>KRISH REVEALS / THE PROJECTS</Eyebrow><h2>Projects,<br/><span>revealed live.</span><i>〰</i></h2></div><div className="work-heading-right"><p>Made by Krish Sarkar.<br/>Shared as they come alive ↘</p><button className="btn btn-outline-light" type="button" onClick={() => setExpandedProjects(v => !v)}>{expandedProjects ? 'Show featured' : 'See all reveals'} <ArrowUpRight size={15}/></button></div></div>
       <div className="work-controls"><div className="work-filters">{filters.map((item) => <button key={item} className={filter === item ? 'filter-active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div><span className="work-count">{shownProjects.length.toString().padStart(2, '0')} PROJECTS <Asterisk size={12}/></span></div>
       <div className="work-grid reference-featured-grid">{featured.map((project, index) => <ProjectCard key={project.id} project={project} index={index}/>)}</div>
       {more.length > 0 && <div className="reference-more-projects"><span className="more-scribble">More<br/>projects ↗</span><div className="reference-mini-grid">{more.map((project) => <a key={project.id} className="mini-project" href={`/projects/${project.slug}`}><div className="mini-project-art"><ProjectArtwork project={project}/></div><div><small>{project.category} / {project.year}</small><b>{project.name}</b><span>{project.tagline || project.description}<ArrowRight size={14}/></span></div></a>)}</div>{hiddenProjectCount > 0 && !expandedProjects && <button className="more-projects-button" type="button" onClick={() => setExpandedProjects(true)}>+ {hiddenProjectCount} more project{hiddenProjectCount === 1 ? '' : 's'}</button>}{expandedProjects && hiddenProjectCount > 0 && <button className="more-projects-button" type="button" onClick={() => setExpandedProjects(false)}>Show featured selection</button>}</div>}
       <div className="work-footnote"><span>BUILT WITH CURIOSITY, ITERATION AND A LITTLE TOO MUCH COFFEE.</span><a href="#contact">HAVE SOMETHING IN MIND? <ArrowUpRight size={14}/></a></div>
     </section>
-    <TimelineSection/><SkillsSection/><JournalSection posts={posts}/><ContactSection settings={settings}/>
+    <MarqueeSection projects={projects}/><AboutSection settings={settings}/><ServicesSection settings={settings}/><TimelineSection/><SkillsSection/><JournalSection posts={posts}/><ContactSection settings={settings}/>
   </main><Footer settings={settings}/></div>
 }
 
