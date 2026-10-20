@@ -11,3 +11,6 @@
 - The public brand is now “Krish Reveals,” with “Krish Sarkar” kept prominent as the creator; the core story is building digital products and revealing the work live.
 - Existing CMS headline and intro fields remain editable and are shown as supporting copy beneath the new brand-led hero.
 - Persisted intro and SEO defaults were updated to match the new identity; existing post/project records and admin branding were left unchanged.
+- Production content, admin hash, and uploaded images were migrated from the ignored local database into the existing Krish Reveals Convex project; active sessions were intentionally not copied.
+- Convex owns production settings, projects, posts, inquiries, login sessions, and uploaded media. The JSON database remains only as a local-development fallback.
+- Vercel receives the Convex URL as configuration and the deployment key as a secret; the key and local Convex database are excluded from Git and deployment bundles.

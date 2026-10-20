@@ -1,6 +1,6 @@
-# Krish Sarkar — Portfolio + Content Studio
+# Krish Reveals — Krish Sarkar
 
-A complete portfolio project based on the supplied reference: a white-first editorial design, collage-style hero, scroll-linked project marquee, about and services sections, dark featured-work band, experience timeline, dark skills strip, searchable journal, and contact area, authenticated admin panel, local Node.js API, image uploads, and inquiry inbox. It uses React, TypeScript, Vite, Node's built-in HTTP server, and a JSON data store so it runs without database credentials or paid services.
+A public portfolio and content studio for Krish Sarkar, with a project-reveal identity, searchable journal, case studies, contact form, and authenticated admin. It uses React, TypeScript, Vite, a Node API, and Convex for persistent content, sessions, inquiries, and image storage. Local development can still use the JSON fallback without Convex credentials.
 
 ## Quick start
 
@@ -12,6 +12,14 @@ npm run dev
 ```
 
 `npm run dev` starts both processes: the Vite frontend (normally `http://localhost:5173`) and the API on `http://localhost:8787`. The frontend proxies `/api` and `/uploads` to the API. Keep this terminal open while developing.
+
+### Connect Convex
+
+Create or select the Convex project, then run `npx convex login` followed by `npm run convex:dev`. Convex generates `VITE_CONVEX_URL` in `.env.local`. Create a server-only key for the dev deployment with `npx convex deployment token create krish-reveals-local-api --deployment dev --save-env`; it writes `CONVEX_DEPLOY_KEY` into ignored `.env.local`. Never use a `VITE_` prefix for this key.
+
+Deploy functions with `npm run convex:deploy`. To copy the existing local content and image uploads into an empty Convex deployment, run `npm run convex:import` once. The importer refuses to overwrite an initialized deployment, copies projects, posts, inquiries, settings, and the admin password hash, moves images to Convex Storage, and intentionally does not migrate browser sessions.
+
+For Vercel, create a production key with `npx convex deployment token create krish-reveals-vercel --prod --save-env .env.convex.production`, then deploy with `npx convex deploy --env-file .env.convex.production`. Configure `CONVEX_URL` and `CONVEX_DEPLOY_KEY` as server environment variables for Production. Run `CONVEX_URL=<production Convex URL> npm run convex:import -- --production` once to populate the production database. The API requires both values on Vercel; without them it fails closed instead of writing to ephemeral local files.
 
 ### Create the admin account
 
@@ -81,11 +89,7 @@ npm start
 
 ## Data and deployment notes
 
-This version uses an atomic JSON file at `data/db.json` and stores uploaded images in `public/uploads/`. That is deliberate: it gives you a working end-to-end project without requiring external credentials before you can try it.
-
-**For deployment, use a persistent Node host with a mounted writable disk** and mount it so both `data/` and `public/uploads/` persist across deploys. Configure HTTPS so the admin cookie receives its `Secure` attribute (`NODE_ENV=production`). Create the admin account on the deployed instance using its shell after the persistent disk is mounted.
-
-Do not deploy this JSON-store configuration to an ephemeral/serverless filesystem and expect content to persist. Vercel serverless functions, for example, are not a suitable host for this file-backed API as-is. For a horizontally scaled or serverless production site, replace the JSON store with PostgreSQL/Supabase and move uploaded media to object storage. The API and admin UI are separated enough to make that migration practical, but the current version does not pretend a hosted database has already been configured.
+When Convex is not configured, local development initializes an atomic fallback at `data/db.json` and stores uploads in `public/uploads/`. Production uses Convex; the fallback is not deployed or committed. Configure HTTPS in production so the admin cookie receives its `Secure` attribute (`NODE_ENV=production`).
 
 Back up `data/db.json` and `public/uploads/` before upgrades. Do not commit live admin data, uploads, passwords, API keys, or `.env` to version control.
 

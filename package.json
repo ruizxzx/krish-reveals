@@ -10,10 +10,14 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty",
     "start": "node server/index.mjs",
-    "admin:create": "node scripts/create-admin.mjs"
+    "admin:create": "node scripts/create-admin.mjs",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy",
+    "convex:import": "node scripts/import-convex.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.7.0",
+    "convex": "^1.47.0",
     "framer-motion": "^12.23.12",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",

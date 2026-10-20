@@ -1,26 +1,29 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import crypto from 'node:crypto'
-import { ensureStorage, readDb, mutateDb, ROOT, UPLOAD_DIR, publicSettings } from './db.mjs'
+import { ensureStorage, ROOT, UPLOAD_DIR, publicSettings } from './db.mjs'
+import { convexConfigured, getAdmin, getAdminData, getAdminForSession, getPublicData, getPublishedPost, setAdmin, createSession, deleteSession, setSettings, createProject, updateProject, deleteProject, createPost, updatePost, deletePost, createInquiry, updateInquiry, deleteInquiry, uploadImage } from './convex-store.mjs'
 import { makePasswordHash, verifyPassword, newSessionToken, hashToken, randomId, safeText, safeSlug } from './security.mjs'
 
 function loadEnvFile() {
-  const envPath = path.join(ROOT, '.env')
-  if (!fs.existsSync(envPath)) return
-  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const idx = trimmed.indexOf('=')
-    if (idx < 1) continue
-    const key = trimmed.slice(0, idx).trim()
-    let value = trimmed.slice(idx + 1).trim()
-    if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1)
-    if (!(key in process.env)) process.env[key] = value
+  for (const envName of ['.env', '.env.local']) {
+    const envPath = path.join(ROOT, envName)
+    if (!fs.existsSync(envPath)) continue
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const idx = trimmed.indexOf('=')
+      if (idx < 1) continue
+      const key = trimmed.slice(0, idx).trim()
+      let value = trimmed.slice(idx + 1).trim()
+      if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1)
+      if (!(key in process.env)) process.env[key] = value
+    }
   }
 }
 loadEnvFile()
-ensureStorage()
+if (process.env.VERCEL && !convexConfigured()) throw new Error('Set CONVEX_URL and CONVEX_DEPLOY_KEY before deploying the API to Vercel.')
+if (!convexConfigured()) ensureStorage()
 const PORT = Number(process.env.PORT || 8787)
 const COOKIE_NAME = 'ks_admin_session'
 const SESSION_MS = 1000 * 60 * 60 * 12
@@ -41,6 +44,13 @@ function send(res, status, body, extraHeaders = {}) {
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
+    if (req.body !== undefined) {
+      const body = req.body
+      const raw = typeof body === 'string' ? body : JSON.stringify(body)
+      if (Buffer.byteLength(raw || '', 'utf8') > MAX_JSON_BYTES) return reject(Object.assign(new Error('Request body is too large.'), { status: 413 }))
+      try { return resolve(typeof body === 'string' ? JSON.parse(body) : body) }
+      catch { return reject(Object.assign(new Error('Request body must be valid JSON.'), { status: 400 })) }
+    }
     let size = 0
     const chunks = []
     req.on('data', (chunk) => {
@@ -68,17 +78,15 @@ function csrfOkay(req) {
   try { return new URL(origin).host === req.headers.host }
   catch { return false }
 }
-function getAdmin(req) {
+async function getSessionAdmin(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE_NAME]
   if (!token) return null
   const digest = hashToken(token)
-  const db = readDb()
-  const session = db.sessions.find((item) => item.hash === digest && item.expiresAt > Date.now())
-  if (!session || !db.admin) return null
-  return { email: db.admin.email, sessionHash: digest }
+  const admin = await getAdminForSession(digest)
+  return admin ? { ...admin, sessionHash: digest } : null
 }
-function requireAdmin(req, res) {
-  const admin = getAdmin(req)
+async function requireAdmin(req, res) {
+  const admin = await getSessionAdmin(req)
   if (!admin) { send(res, 401, { error: 'Please sign in again.' }); return null }
   return admin
 }
@@ -146,8 +154,8 @@ function getRequestOrigin(req) {
   return 'http://localhost'
 }
 
-function pageMetadata(pathname, req) {
-  const db = readDb()
+async function pageMetadata(pathname, req) {
+  const db = await getPublicData()
   const settings = publicSettings(db.settings || {})
   const siteName = settings.name || 'Krish Sarkar'
   const origin = getRequestOrigin(req)
@@ -190,8 +198,8 @@ function pageMetadata(pathname, req) {
   return { title, description, canonical: `${origin}${pagePath}`, type, image }
 }
 
-function injectPageMetadata(html, pathname, req) {
-  const metadata = pageMetadata(pathname, req)
+async function injectPageMetadata(html, pathname, req) {
+  const metadata = await pageMetadata(pathname, req)
   const replaceMeta = (attribute, key, value) => {
     const safeValue = htmlEscape(value)
     const pattern = new RegExp(`<meta\\s+${attribute}=[\"']${key}[\"'][^>]*>`, 'i')
@@ -227,8 +235,8 @@ async function handle(req, res) {
       return send(res, 200, body, { 'Content-Type': 'text/plain; charset=utf-8' })
     }
     if (!baseUrl) return send(res, 503, 'Set SITE_URL in .env to generate canonical sitemap URLs.', { 'Content-Type': 'text/plain; charset=utf-8' })
-    const db = readDb()
-    const urls = [{ loc: `${baseUrl}/`, lastmod: new Date().toISOString().slice(0, 10) }, { loc: `${baseUrl}/blog`, lastmod: new Date().toISOString().slice(0, 10) }, ...db.projects.filter((item) => item.published).map((item) => ({ loc: `${baseUrl}/projects/${encodeURIComponent(item.slug)}`, lastmod: String(item.updatedAt || `${item.year || ''}-01-01`).slice(0, 10) })), ...db.posts.filter((item) => item.status === 'published').map((item) => ({ loc: `${baseUrl}/blog/${encodeURIComponent(item.slug)}`, lastmod: String(item.updatedAt || item.date || new Date().toISOString()).slice(0, 10) }))]
+    const db = await getPublicData()
+    const urls = [{ loc: `${baseUrl}/`, lastmod: new Date().toISOString().slice(0, 10) }, { loc: `${baseUrl}/blog`, lastmod: new Date().toISOString().slice(0, 10) }, ...db.projects.map((item) => ({ loc: `${baseUrl}/projects/${encodeURIComponent(item.slug)}`, lastmod: String(item.updatedAt || `${item.year || ''}-01-01`).slice(0, 10) })), ...db.posts.map((item) => ({ loc: `${baseUrl}/blog/${encodeURIComponent(item.slug)}`, lastmod: String(item.updatedAt || item.date || new Date().toISOString()).slice(0, 10) }))]
     const xmlEscape = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
     const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((item) => `  <url><loc>${xmlEscape(item.loc)}</loc><lastmod>${/^\d{4}-\d{2}-\d{2}$/.test(item.lastmod) ? item.lastmod : new Date().toISOString().slice(0, 10)}</lastmod></url>`).join('\n')}\n</urlset>`
     return send(res, 200, body, { 'Content-Type': 'application/xml; charset=utf-8' })
@@ -238,14 +246,12 @@ async function handle(req, res) {
 
   if (pathname === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, service: 'krish-portfolio-api' })
   if (pathname === '/api/public/data' && req.method === 'GET') {
-    const db = readDb()
-    const projects = db.projects.filter((item) => item.published).sort((a, b) => Number(b.featured) - Number(a.featured) || String(a.number).localeCompare(String(b.number)))
-    const posts = db.posts.filter((item) => item.status === 'published').sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    return send(res, 200, { settings: publicSettings(db.settings), projects, posts })
+    const data = await getPublicData()
+    return send(res, 200, { settings: publicSettings(data.settings), projects: data.projects, posts: data.posts })
   }
   if (pathname.startsWith('/api/public/posts/') && req.method === 'GET') {
     const slug = pathname.slice('/api/public/posts/'.length)
-    const post = readDb().posts.find((item) => item.slug === slug && item.status === 'published')
+    const post = await getPublishedPost(slug)
     return post ? send(res, 200, post) : send(res, 404, { error: 'Article not found.' })
   }
   if (pathname === '/api/contact' && req.method === 'POST') {
@@ -262,7 +268,7 @@ async function handle(req, res) {
     if (safeText(body.website, 300)) return send(res, 200, { ok: true }) // honeypot field
     const inquiry = { id: randomId(), name, email, company: safeText(body.company, 140), type: safeText(body.type, 120), budget: safeText(body.budget, 100), message, createdAt: new Date().toISOString(), readAt: null }
     contactAttempt.count += 1; contactAttempts.set(contactIp, contactAttempt)
-    mutateDb((db) => { db.messages.unshift(inquiry); db.messages = db.messages.slice(0, 1000) })
+    await createInquiry(inquiry)
     let notification = 'not-configured'
     if (process.env.RESEND_API_KEY && process.env.CONTACT_TO_EMAIL && process.env.CONTACT_FROM_EMAIL) {
       try {
@@ -290,51 +296,51 @@ async function handle(req, res) {
     if (attempt.until > Date.now() && attempt.count >= 8) return send(res, 429, { error: 'Too many sign-in attempts. Wait 10 minutes and try again.' })
     let body
     try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
-    const db = readDb()
-    if (!db.admin) return send(res, 503, { error: 'Admin account is not configured. Run `npm run admin:create` in the project directory first.' })
-    const valid = safeText(body.email, 240).toLowerCase() === db.admin.email.toLowerCase() && verifyPassword(typeof body.password === 'string' ? body.password : '', db.admin.passwordHash)
+    const admin = await getAdmin()
+    if (!admin) return send(res, 503, { error: 'Admin account is not configured. Create it in Convex or run the local admin setup command.' })
+    const valid = safeText(body.email, 240).toLowerCase() === admin.email.toLowerCase() && verifyPassword(typeof body.password === 'string' ? body.password : '', admin.passwordHash)
     if (!valid) {
       attempt.count += 1; attempt.until = attempt.count >= 8 ? Date.now() + 10 * 60 * 1000 : Date.now() + 60 * 1000; loginAttempts.set(ip, attempt)
       return send(res, 401, { error: 'Email or password is incorrect.' })
     }
     loginAttempts.delete(ip)
     const token = newSessionToken()
-    mutateDb((data) => { data.sessions = data.sessions.filter((s) => s.expiresAt > Date.now()).slice(-20); data.sessions.push({ hash: hashToken(token), createdAt: Date.now(), expiresAt: Date.now() + SESSION_MS }) })
-    return send(res, 200, { ok: true, email: db.admin.email }, { 'Set-Cookie': sessionCookie(token) })
+    await createSession(hashToken(token), Date.now() + SESSION_MS)
+    return send(res, 200, { ok: true, email: admin.email }, { 'Set-Cookie': sessionCookie(token) })
   }
   if (pathname === '/api/admin/logout' && req.method === 'POST') {
     const token = parseCookies(req.headers.cookie)[COOKIE_NAME]
-    if (token) mutateDb((db) => { db.sessions = db.sessions.filter((s) => s.hash !== hashToken(token)) })
+    if (token) await deleteSession(hashToken(token))
     return send(res, 200, { ok: true }, { 'Set-Cookie': cleanSessionCookie() })
   }
   if (pathname === '/api/admin/me' && req.method === 'GET') {
-    const admin = getAdmin(req)
+    const admin = await getSessionAdmin(req)
     if (!admin) return send(res, 401, { error: 'Not signed in.' })
     return send(res, 200, { email: admin.email })
   }
 
   if (pathname.startsWith('/api/admin/')) {
-    const admin = requireAdmin(req, res)
+    const admin = await requireAdmin(req, res)
     if (!admin) return
-    const db = readDb()
+    const db = await getAdminData()
     if (pathname === '/api/admin/dashboard' && req.method === 'GET') return send(res, 200, adminSummary(db))
     if (pathname === '/api/admin/settings' && req.method === 'GET') return send(res, 200, db.settings)
     if (pathname === '/api/admin/settings' && req.method === 'PUT') {
       let body; try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
       const allowed = ['name', 'title', 'eyebrow', 'headlineA', 'headlineB', 'headlineC', 'heroPrimaryLabel', 'heroSecondaryLabel', 'profileImage', 'seoTitle', 'seoDescription', 'intro', 'about', 'email', 'location', 'availability', 'github', 'linkedin', 'instagram', 'resumeUrl', 'accent']
-      mutateDb((data) => {
-        for (const key of allowed) if (typeof body[key] === 'string') data.settings[key] = safeText(body[key], key === 'about' || key === 'intro' ? 3000 : 500)
-        if (Array.isArray(body.services)) data.settings.services = body.services.slice(0, 5).map((item) => ({ title: safeText(item?.title, 120), description: safeText(item?.description, 700) })).filter((item) => item.title && item.description)
-      })
-      return send(res, 200, publicSettings(readDb().settings))
+      const settings = { ...db.settings }
+      for (const key of allowed) if (typeof body[key] === 'string') settings[key] = safeText(body[key], key === 'about' || key === 'intro' ? 3000 : 500)
+      if (Array.isArray(body.services)) settings.services = body.services.slice(0, 5).map((item) => ({ title: safeText(item?.title, 120), description: safeText(item?.description, 700) })).filter((item) => item.title && item.description)
+      await setSettings(settings)
+      return send(res, 200, publicSettings(settings))
     }
 
     if (pathname === '/api/admin/projects' && req.method === 'GET') return send(res, 200, db.projects)
     if (pathname === '/api/admin/projects' && req.method === 'POST') {
       let body; try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
       try {
-        let result
-        mutateDb((data) => { const project = validateProject(body); if (data.projects.some((p) => p.slug === project.slug)) throw Object.assign(new Error('A project with this slug already exists.'), { status: 409 }); data.projects.unshift(project); result = project })
+        const project = validateProject(body)
+        const result = await createProject(project)
         return send(res, 201, result)
       } catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
@@ -342,13 +348,15 @@ async function handle(req, res) {
     if (projectMatch && req.method === 'PUT') {
       let body; try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
       try {
-        let result
-        mutateDb((data) => { const index = data.projects.findIndex((p) => p.id === projectMatch[1]); if (index < 0) throw Object.assign(new Error('Project not found.'), { status: 404 }); const next = validateProject(body, data.projects[index]); if (data.projects.some((p, i) => i !== index && p.slug === next.slug)) throw Object.assign(new Error('A project with this slug already exists.'), { status: 409 }); data.projects[index] = next; result = next })
+        const existing = db.projects.find((project) => project.id === projectMatch[1])
+        if (!existing) throw Object.assign(new Error('Project not found.'), { status: 404 })
+        const next = validateProject(body, existing)
+        const result = await updateProject(projectMatch[1], next)
         return send(res, 200, result)
       } catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
     if (projectMatch && req.method === 'DELETE') {
-      try { mutateDb((data) => { const index = data.projects.findIndex((p) => p.id === projectMatch[1]); if (index < 0) throw Object.assign(new Error('Project not found.'), { status: 404 }); data.projects.splice(index, 1) }); return send(res, 200, { ok: true }) }
+      try { await deleteProject(projectMatch[1]); return send(res, 200, { ok: true }) }
       catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
 
@@ -356,8 +364,8 @@ async function handle(req, res) {
     if (pathname === '/api/admin/posts' && req.method === 'POST') {
       let body; try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
       try {
-        let result
-        mutateDb((data) => { const post = validatePost(body); if (data.posts.some((p) => p.slug === post.slug)) throw Object.assign(new Error('An article with this slug already exists.'), { status: 409 }); data.posts.unshift(post); result = post })
+        const post = validatePost(body)
+        const result = await createPost(post)
         return send(res, 201, result)
       } catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
@@ -365,25 +373,27 @@ async function handle(req, res) {
     if (postMatch && req.method === 'PUT') {
       let body; try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
       try {
-        let result
-        mutateDb((data) => { const index = data.posts.findIndex((p) => p.id === postMatch[1]); if (index < 0) throw Object.assign(new Error('Article not found.'), { status: 404 }); const next = validatePost(body, data.posts[index]); if (data.posts.some((p, i) => i !== index && p.slug === next.slug)) throw Object.assign(new Error('An article with this slug already exists.'), { status: 409 }); data.posts[index] = next; result = next })
+        const existing = db.posts.find((post) => post.id === postMatch[1])
+        if (!existing) throw Object.assign(new Error('Article not found.'), { status: 404 })
+        const next = validatePost(body, existing)
+        const result = await updatePost(postMatch[1], next)
         return send(res, 200, result)
       } catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
     if (postMatch && req.method === 'DELETE') {
-      try { mutateDb((data) => { const index = data.posts.findIndex((p) => p.id === postMatch[1]); if (index < 0) throw Object.assign(new Error('Article not found.'), { status: 404 }); data.posts.splice(index, 1) }); return send(res, 200, { ok: true }) }
+      try { await deletePost(postMatch[1]); return send(res, 200, { ok: true }) }
       catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
 
-    if (pathname === '/api/admin/messages' && req.method === 'GET') return send(res, 200, db.messages.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))))
+    if (pathname === '/api/admin/messages' && req.method === 'GET') return send(res, 200, db.messages)
     const messageMatch = pathname.match(/^\/api\/admin\/messages\/([^/]+)$/)
     if (messageMatch && req.method === 'PUT') {
       let body; try { body = await readBody(req) } catch (error) { return send(res, error.status || 400, { error: error.message }) }
-      try { let result; mutateDb((data) => { const msg = data.messages.find((item) => item.id === messageMatch[1]); if (!msg) throw Object.assign(new Error('Inquiry not found.'), { status: 404 }); msg.readAt = body.read === false ? null : new Date().toISOString(); result = msg }); return send(res, 200, result) }
+      try { const result = await updateInquiry(messageMatch[1], body.read === false ? null : new Date().toISOString()); return send(res, 200, result) }
       catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
     if (messageMatch && req.method === 'DELETE') {
-      try { mutateDb((data) => { const index = data.messages.findIndex((item) => item.id === messageMatch[1]); if (index < 0) throw Object.assign(new Error('Inquiry not found.'), { status: 404 }); data.messages.splice(index, 1) }); return send(res, 200, { ok: true }) }
+      try { await deleteInquiry(messageMatch[1]); return send(res, 200, { ok: true }) }
       catch (error) { return send(res, error.status || 400, { error: error.message }) }
     }
 
@@ -393,10 +403,8 @@ async function handle(req, res) {
       if (!match) return send(res, 400, { error: 'Use a PNG, JPG, WEBP, or GIF image.' })
       const bytes = Buffer.from(match[2], 'base64')
       if (!bytes.length || bytes.length > 5 * 1024 * 1024) return send(res, 413, { error: 'Images must be smaller than 5 MB.' })
-      const extByMime = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' }
-      const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${extByMime[match[1]]}`
-      fs.writeFileSync(path.join(UPLOAD_DIR, filename), bytes, { flag: 'wx' })
-      return send(res, 201, { url: `/uploads/${filename}` })
+      const imageUrl = await uploadImage(bytes, match[1])
+      return send(res, 201, { url: imageUrl })
     }
     return send(res, 404, { error: 'Admin endpoint not found.' })
   }
@@ -425,25 +433,30 @@ async function handle(req, res) {
         ? 'public, max-age=31536000, immutable'
         : 'public, max-age=3600, stale-while-revalidate=86400'
     res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream', 'Cache-Control': cacheControl, 'X-Content-Type-Options': 'nosniff' })
-    if (ext === '.html') return res.end(injectPageMetadata(fs.readFileSync(candidate, 'utf8'), pathname, req))
+    if (ext === '.html') return res.end(await injectPageMetadata(fs.readFileSync(candidate, 'utf8'), pathname, req))
     return fs.createReadStream(candidate).pipe(res)
   }
   const entry = path.join(dist, 'index.html')
   if (fs.existsSync(entry)) {
     res.writeHead(200, { 'Content-Type': mime['.html'], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' })
-    return res.end(injectPageMetadata(fs.readFileSync(entry, 'utf8'), pathname, req))
+    return res.end(await injectPageMetadata(fs.readFileSync(entry, 'utf8'), pathname, req))
   }
   return send(res, 503, 'Frontend is not built yet. Run npm run build first.')
 }
 
-const server = http.createServer((req, res) => {
-  Promise.resolve(handle(req, res)).catch((error) => {
+export async function handler(req, res) {
+  try {
+    await handle(req, res)
+  } catch (error) {
     console.error('[portfolio-api]', error)
     if (!res.headersSent) send(res, error.status || 500, { error: error.status ? error.message : 'Unexpected server error.' })
     else res.destroy()
-  })
-})
-server.listen(PORT, '0.0.0.0', () => console.log(`Portfolio API listening on http://localhost:${PORT}`))
+  }
+}
 
-process.on('SIGTERM', () => server.close(() => process.exit(0)))
-process.on('SIGINT', () => server.close(() => process.exit(0)))
+if (!process.env.VERCEL) {
+  const server = http.createServer(handler)
+  server.listen(PORT, '0.0.0.0', () => console.log(`Portfolio API listening on http://localhost:${PORT}`))
+  process.on('SIGTERM', () => server.close(() => process.exit(0)))
+  process.on('SIGINT', () => server.close(() => process.exit(0)))
+}

@@ -1,12 +1,13 @@
 import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
-import { ensureStorage, readDb, mutateDb } from '../server/db.mjs'
+import { ensureStorage } from '../server/db.mjs'
+import { convexConfigured, getAdmin, setAdmin } from '../server/convex-store.mjs'
 import { makePasswordHash } from '../server/security.mjs'
 
-ensureStorage()
+if (!convexConfigured()) ensureStorage()
 const rl = readline.createInterface({ input, output })
 try {
-  const current = readDb().admin
+  const current = await getAdmin()
   if (current) {
     const replace = (await rl.question(`An admin exists (${current.email}). Replace its credentials? Type RESET to continue: `)).trim()
     if (replace !== 'RESET') { console.log('No changes made.'); process.exitCode = 0 }
@@ -19,6 +20,6 @@ async function create() {
   const password = await rl.question('Password (minimum 12 characters): ')
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address.')
   if (password.length < 12) throw new Error('Password must be at least 12 characters.')
-  mutateDb((db) => { db.admin = { email, passwordHash: makePasswordHash(password), createdAt: new Date().toISOString() }; db.sessions = [] })
+  await setAdmin({ email, passwordHash: makePasswordHash(password), createdAt: new Date().toISOString() })
   console.log(`Admin account saved for ${email}. Sign in at /admin.`)
 }
